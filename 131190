@@ -1,0 +1,82 @@
+#include <SoftwareSerial.h>
+
+SoftwareSerial mySerial(11, 10); // RX, TX
+int PinIO[] = {2, 3, 4, 5, 6, 7, 8, 9, 12, 13, 14, 15, 16, 17, 18};
+int pinLED = 19;
+void setup()
+{
+  // Open serial communications and wait for port to open:
+  Serial.begin(115200);
+  for (int i = 0; i < 15; i++) {
+    pinMode(PinIO[i], OUTPUT);
+    digitalWrite(PinIO[i] , LOW);
+    Serial.print(PinIO[i]);
+    Serial.println(" as OUTPUT");
+    delay(1);
+  }
+  pinMode(pinLED, OUTPUT);
+  Serial.println("Good day!");
+  // set the data rate for the SoftwareSerial port
+  mySerial.begin(9600);
+  mySerial.println("On");
+}
+
+long lastDebounceTime = 0;
+long debounceDelay = 300; //change LED state every 500mS
+String inputString;
+void loop() // run over and over
+{
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+     digitalWrite(pinLED , !digitalRead(pinLED));
+     if(!digitalRead(pinLED) == 0) Serial.println("LED ON");
+     else Serial.println("LED OFF");
+     lastDebounceTime = millis();
+  }
+ 
+  
+  while (mySerial.available()) {
+    // get the new byte:
+    char inChar = (char)mySerial.read();
+    delay(1);
+    // add it to the inputString:
+    inputString += inChar;
+    delay(1);
+    // if the incoming character is a newline, set a flag
+    // so the main loop can do something about it:
+    if (inChar == '\n') {
+      Serial.println(inputString);
+      switchPins(inputString);
+    }
+  }
+  inputString = "";
+
+}
+//***************************************************
+//Switch pin on or off
+//***************************************************
+bool DEBUG = 1;
+void switchPins(String req) {
+  String switchPostion, btnNu;
+  int len;
+  if (req.length() > 15) {//error corection
+    //strip away received string
+    req = req.substring(req.indexOf("/") + 1, req.indexOf(" HTTP/1.1"));
+    if (DEBUG) Serial.println(req);
+    switchPostion = req.substring( 0, 1);//button on/off
+    if (DEBUG) Serial.println(switchPostion);
+    if (switchPostion == "N" || switchPostion == "F") {
+      len = req.length();
+      if (DEBUG) Serial.println(len);
+      btnNu = req.substring(1, len);//button number pressed
+      if (DEBUG) Serial.println(btnNu);
+    } else {
+      if (DEBUG) Serial.println("Input error");
+      return;
+    }
+  }
+  //change the N/F to 1/0.
+  //Then write a 0 or  to the position in the array
+  if (switchPostion == "N")   digitalWrite(PinIO[btnNu.toInt()], HIGH);
+  else digitalWrite(PinIO[btnNu.toInt()], LOW);
+}
+

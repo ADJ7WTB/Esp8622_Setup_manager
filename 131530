@@ -1,0 +1,579 @@
+/*
+   esp8266 version 1.6
+*/
+
+#include <ESP8266WiFi.h>
+#include <EEPROM.h>
+
+
+#define PAYLOAD_SIZE 11         // Number of buttons
+int nodePayload [PAYLOAD_SIZE];
+String btnNames[] = {"Light 1", "Light 2", "Light 3", "Light 4", "Light 5", "Light 6", "Light 7", "Light 8", "Light 9",
+                     "Light 10", "Relay 1", "Relay 2"
+                    };
+
+// WiFi Definitions for station mode
+String ssid = "";
+String pass = "";
+
+//AP definitions
+#define AP_SSID "WIFIcreations"    // YOUR SSID
+String AP_PASSWORD = "0987654321";  // YOUR AP PASSWORD
+String nameConfig;                 // Server name. read from memory
+
+// Pin Definitions
+//analogRead(A0) reads the value of the ADC channel connected to the TOUT pin
+//analogWrite(pin, value) enables software PWM on the given pin. PWM may be used on pins 0 to 15.
+const int selectPin = D4; // Program mode and to select AP mode
+
+// Create an instance of the server
+// specify the port to listen on as an argument
+WiFiServer server(80);
+IPAddress myIP = WiFi.softAPIP();
+
+// Definitions
+long lastDebounceTime = 0;  // Use to switch led on only
+long debounceDelay = 800;
+int wifi_AP = 0;            // pick between AP or server
+bool DEBUG = 1;             //0 for no Serial output
+int checkAP = 0;
+//****************************************************
+void setup() {
+  initHardware();   // Setup pins and serial port
+  initConfig();     // Setup page strings
+
+  for (int x = 0; x < 50; x++) {
+    delay(100);      // Give you time to select AP
+    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+  }
+
+  if (checkAP) {
+    if (digitalRead(selectPin)) {
+      if (DEBUG) Serial.println("CLIENT MODE");
+      setupWiFi();    // Enable for server
+      wifi_AP = 1;
+    } else {    // Dont make it 1 else if restart it will go to programming mode
+      if (DEBUG) Serial.println("ACCESS POINT MODE");
+      setupAP();      // Enable for AP
+      wifi_AP = 0;
+    }
+  }
+  else {
+    if (DEBUG) Serial.println("ACCESS POINT MODE");
+    setupAP();      // Enable for AP
+    wifi_AP = 0;
+  }
+}
+//****************************************************************************//
+//Setup the hardware
+//****************************************************************************//
+void initHardware()
+{ //GPIO0-GPIO15 can be INPUT, OUTPUT, INPUT_PULLUP, and INPUT_PULLDOWN.
+  //maximum output current is 12mA(R=V/I so 3.3V at 12mA = 275Ω min)
+  Serial.begin(9600);
+  delay(200);
+  Serial.println("WIFI Starting");
+  delay(200);
+  pinMode(selectPin, INPUT_PULLUP);
+  delay(200);
+  pinMode(LED_BUILTIN, OUTPUT);
+}
+//****************************************************************************//
+//Setup the Configaration
+//****************************************************************************//
+void initConfig() {
+  if (DEBUG) Serial.println("Reading EEPROM");
+  
+  String xread = getEEPROMString(201, 202);     // Check if there are any default values written in
+  String checkx = getEEPROMString(203, 205);     // if 0 then wifi mode not connecting
+  
+  checkAP = checkx.toInt();
+  
+  if (!checkAP) setEEPROMString(203, 205, "1");
+  if (xread != "1") {
+    if (DEBUG) Serial.println("Setting defaults in EEPROM");
+    dEEPROM();                                  // Write default values to EEPROM
+    ssid = getEEPROMString(0, 50);             // SSID name
+    pass = getEEPROMString(51, 100);           // Password
+    AP_PASSWORD = getEEPROMString(101, 150);   // Change AP password
+    nameConfig = getEEPROMString(151, 200);    // Page name
+    if (DEBUG) Serial.println(ssid);
+    if (DEBUG) Serial.println(pass);
+    if (DEBUG) Serial.println(AP_PASSWORD);
+    if (DEBUG) Serial.println(nameConfig);
+  }
+  else {
+    ssid = getEEPROMString(0, 50);             // SSID name
+    pass = getEEPROMString(51, 100);           // Password
+    AP_PASSWORD = getEEPROMString(101, 150);   // Change AP password
+    nameConfig = getEEPROMString(151, 200);    // Page name
+    if (DEBUG) Serial.println(ssid);
+    if (DEBUG) Serial.println(pass);
+    if (DEBUG) Serial.println(AP_PASSWORD);
+    if (DEBUG) Serial.println(nameConfig);
+  }
+  delay(1000);
+}
+//***************************************************************************
+void loop() {
+  if (wifi_AP) {
+    CallSTA();
+  }
+  else {
+    CallAP();
+  }
+
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    lastDebounceTime = millis();
+    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));   // Turn the LED on (Note that LOW is the voltage level
+  }
+}
+//****************************************************************************//
+//This is the STATION MODE run part
+//****************************************************************************//
+void CallSTA() {
+  int x = 0;
+  String switchPostion;
+  String btnNu;
+  int len;
+  // Check if a client has connected
+  WiFiClient client = server.available();
+  if (!client) {
+    return;
+  }
+
+  // Wait until the client sends some data
+  while (!client.available()) {
+    x++;                    // Time out
+    if (x == 3000) return;
+    delay(1);
+  }
+  if (DEBUG) Serial.println("\nStation Mode Connected");
+  // Read the first line of the request
+  String req = client.readStringUntil('\r');
+  client.flush();
+
+  Serial.println(req);
+
+  if (req.length() > 15) {//error corection
+    //strip away received string
+    req = req.substring(req.indexOf("/") + 1, req.indexOf(" HTTP/1.1"));
+    if (DEBUG) Serial.println(req);
+    switchPostion = req.substring( 0, 1);//button on/off
+    if (DEBUG) Serial.println(switchPostion);
+    if (switchPostion == "N" || switchPostion == "F") {
+      len = req.length();
+      if (DEBUG) Serial.println(len);
+      btnNu = req.substring(1, len);//button number pressed
+      if (DEBUG) Serial.println(btnNu);
+      //change the N/F to 1/0.
+      //Then write a 0 or  to the position in the array
+      if (switchPostion == "N")   nodePayload[btnNu.toInt()] = 1;
+      else nodePayload[btnNu.toInt()] = 0;
+    } else {
+      if (DEBUG) Serial.println("Input error");
+    }
+  }
+  client.flush();
+
+  // Prepare the response. Start with the common header:
+  String s = "HTTP/1.1 200 OK\r\n";
+  s += "Content-Type: text/html\r\n\r\n";
+  s += "<!DOCTYPE HTML>\r\n<html><head>";
+  s += "<meta name=\"viewport\" content=\"width=devide-width, initial-scale=1\">";
+
+  s += "<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}";
+  s += "p { color: red; size: 3; }";
+  s += "H1 { color: BLUE;}";
+  s += "H5 { color: white; }";
+  s += ".button { background-color: #18AB6A; color: white; padding: 10px 35px;";
+  s += "font-size: 20px; margin: 2px; cursor: pointer;}";
+  s += ".button2 {background-color: #ff878A; color: white; padding: 10px 35px;";
+  s += "font-size: 20px; margin: 2px; cursor: pointer;}</style>";
+
+  s += "<title>ESP8266 Wifi Creations</title></head>";
+  s += "<body bgcolor=#777><center>";
+  s += "<table border='1' bgcolor=#90f0f0><tr><td>";
+
+  s += "<h1><center>";  s += nameConfig;  s += "</center></h1>";
+
+  s += "</td></tr><tr><td>";
+  //create buttons on page
+  for (int z = 0; z <= PAYLOAD_SIZE; z++) {
+    delay(2);
+    if (nodePayload[z] == 1) {
+      s += "<p>&emsp;&emsp;<A HREF='/F";
+      s += String(z);
+      s += "'><button class=\"button\">";
+      s += btnNames[z];
+      s += "</button></A>&emsp;</p>";
+    }
+    else if (nodePayload[z] == 0) {
+      s += "<p>&emsp;<A HREF='/N";
+      s += String(z);
+      s += "'><button class=\"button2\">";
+      s += btnNames[z];
+      s += "</button></A>&emsp;</p>";
+    }
+  }
+
+  s += "</center></td></tr></table><br><br><br>";
+  s += "<br><A HREF=http://adjwtb.blogspot.com><h5><<< Creator >>></h5></a>";
+  s += "</center></body></html>";
+
+  // Send the response to the client
+  client.print(s);
+  delay(20);
+  if (DEBUG) Serial.println("*** Client disonnected ***");
+
+  // The client will actually be disconnected
+  // when the function returns and 'client' object is detroyed
+}
+//****************************************************************************//
+//
+//This is the ACCESS POINT MODE part.
+//AP also used to setup STATION MODE - SSID and PASSWORD
+//
+//****************************************************************************//
+void CallAP() {
+  int x = 0;
+  WiFiClient client = server.available();
+  if (!client) {
+    return;
+  }
+  initConfig();
+  // Wait until the client sends some data
+  while (!client.available()) {
+    x++;
+    if (x == 5000) return;
+    delay(1);   ///hang
+  }
+  if (DEBUG) Serial.println("\nAccess Point Connected");
+  // Read the first line of the request
+  String req = client.readStringUntil('\r');
+  client.flush();
+
+  //if you receive the string. Prossess it and save it to EEPROM
+  bool saveEEPROM = false;
+  bool saveAPEEPROM = false;
+  bool configEEPROM = false;
+
+  if (req.substring(0, 13) == "GET /msg?ssid") {
+    saveEEPROM = prossessForm(req);
+  }  //save AP password
+  else if (req.substring(0, 15) == "GET /msg?APpass") {
+    saveAPEEPROM = prossessForm(req);
+  }  //config names
+  else if  (req.substring(0, 12) == "GET /default") {
+    configEEPROM = prossessForm(req);
+  }
+  else if  (req.substring(0, 12) == "GET /RESTART") {
+    if (DEBUG) Serial.println("Time out error. Restart to AP mode..");
+    delay(5000);
+    ESP.restart();
+  }
+
+  delay(10);
+  initConfig(); //get the new values
+
+  client.flush();
+
+  // Prepare the response. Start with the common header:
+  String s = "HTTP/1.1 200 OK\r\n";
+  s += "Content-Type: text/html\r\n\r\n";
+  s += "<!DOCTYPE HTML>\r\n<html><head>";
+  s += "<meta name=\"viewport\" content=\"width=devide-width, initial-scale=1\">";
+
+  s += "<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}";
+  s += "p { color: Black; font-size: 14px; }";
+  s += "H1 { color: BLUE;}";
+  s += "H5 { color: white; }";
+  s += ".button { background-color: #18AB6A; color: white; padding: 8px 5px;";
+  s += "font-size: 20px; margin: 2px; cursor: pointer;}";
+  s += ".button2 {background-color: #f22; color: white; padding: 8px 5px;";
+  s += "font-size: 14px; margin: 2px; cursor: pointer;}</style>";
+
+  s += "<title>ESP8266 SERVER</title></head>";
+  s += "<body bgcolor=#ab631d>";
+  s += "<table><tr><td>";
+  s += "<h1><center>";
+  s += nameConfig;
+  s += "</center></h1>";
+  s += "</td></tr></table>";
+  
+  // Button to restart AP
+  s += "<center>Restart after setting the WIFI details. It will auto-connect if you password is correct.";
+  s += "<A HREF=RESTART><br><button class=\"button2\">RESTART</button></A></center><br>";
+
+  //scan for hotspots
+  //************************
+  s += "<table border='1'><tr><td>";
+  int n = WiFi.scanNetworks();
+  delay(10);
+  if (n == 0)  {
+    if (DEBUG) Serial.println("Scan found no WIFI hotspot.");
+    s += "<p><b>Scan found no WIFI hotspot. </p></b>";
+  }
+  else  {
+    if (DEBUG) Serial.println("Scan found WIFI hotspot.");
+    s += "<form action='msg'><b>Wi-Fi Networks found</b><br><select name='ssid' width='40'> ";
+    for (int i = 0; i < n; i++)
+    {
+      // Print SSID and RSSI for each network found
+      if (n == 0) {
+        s += "<option selected name='ssid' value'";
+      }
+      else {
+        s += "<option name='ssid' value'";
+      }
+      if (DEBUG) Serial.print(i);
+      if (DEBUG) Serial.print("\t");
+      if (DEBUG) Serial.println(WiFi.SSID(i));
+      s += WiFi.SSID(i);
+      s += "'>";
+      s += WiFi.SSID(i);
+      s += "</option>";
+      delay(2);
+    }
+    s += "</select>";
+    s += "<br><p><b>Password </b><br><input type='password' name='pass' size=20 ><br><input type='submit' value='SAVE'></form>";
+    if (saveEEPROM) s += "<p>SSID and Password saved to EEPROM.";
+    else s += "<p>SSID and Password not saved to EEPROM. SSID should be 2 or more char. Password should be 10 and more ";
+  }
+  s += "</td></tr></table>";
+
+  //******* AP save password
+  s += "<br><table border='1'><tr><td>";
+  s += "<form action='msg'><b>Change Access Point Password.</b><br><br>If you dont want the default password.";
+  s += "<input type='password' name='APpass' size=20 ><br>Repeat new password<br>";
+  s += "<input type='password' name='repeatpass' size=20 >";
+  s += "<br><input type='submit' value='SAVE AP'></form>";
+  if (saveAPEEPROM) s += "<p>AP Password saved to EEPROM.";
+  else s += "<p>AP Password not saved to EEPROM. Password need to be more than 8 char or must be the same. Dont use char like =&?%";
+  s += " </td></tr></table>";
+
+
+  s += "<br><table><tr><td>";
+  s += "<form action='default'><b>Change Page Name</b>";
+  s += "<br><input type='text' name='page' size=20 ><br>";
+  s += "<input type='submit' value='SAVE'></form>";
+  s += " </td></tr></table>";
+
+  s += "</body></html>";
+
+  // Send the response to the client
+  client.print(s);
+  delay(1);
+  if (DEBUG) Serial.println("Client disconnected\n");
+}
+//****************************************************************************//
+//
+//Clean Up ""GET /msg?ssid=&pass= HTTP/1.1""
+//received from AP mode then save it to EEPROM
+//
+//****************************************************************************//
+bool prossessForm(String getString) {
+  String str1 = "";
+  String str2 = "";
+  String str3 = "";
+  String str4 = "";
+  String temp = "";
+  int len = getString.length(); //you need the length of the incoming string
+  //Example: GET /msg?APpass=12345678&repeatpass=1234567 HTTP/1.1
+  //Example: GET /msg?ssid=SSIDname&pass=PASSWORD HTTP/1.1
+  //Example: GET /buttonNames?onname=ON&offname=OFF HTTP/1.1
+  if (DEBUG) {
+    Serial.println("\n\n***********************************");
+    Serial.print("STRING received length: ");
+    Serial.println(len);
+    Serial.print("Received string: ");
+    Serial.println(getString);
+    Serial.println("***********************************");
+  }
+  temp = getString.substring(getString.indexOf("?") + 1, getString.indexOf(" HTTP/1.1"));
+
+  if (DEBUG) {
+    Serial.print("Temp string: ");
+    Serial.println(temp);
+    Serial.println("***********************************");
+  }
+  str1 = temp.substring(0, temp.indexOf("="));//APpass  =12345678&repeatpass=1234567
+  len = temp.length();
+  temp = temp.substring(temp.indexOf("=") + 1, len);
+  //Example: 12345678&repeatpass=1234567
+  str2 = temp.substring(0, temp.indexOf("&"));//12345678  &repeatpass=1234567
+  len = temp.length();
+  temp = temp.substring(temp.indexOf("&") + 1, len);
+  //Example: repeatpass=1234567
+  str3 = temp.substring(0, temp.indexOf("="));//repeatpass=1234567
+  len = temp.length();
+  temp = temp.substring(temp.indexOf("=") + 1, len);
+  //Example: 1234567
+  str4 = temp;
+
+  if (DEBUG) {
+    Serial.println("Prosesed strings");
+    Serial.println("1: " + str1);
+    Serial.println("2: " + str2);
+    Serial.println("3: " + str3);
+    Serial.println("4: " + str4);
+    Serial.println("***********************************");
+  }
+
+  if (str1 == "APpass" || str1 == "ssid") {
+    int len1 = str2.length();
+    int len2 = str4.length();
+    if (len1 < 3 || len2 < 7) {
+      if (DEBUG) {
+        Serial.println("Length to short to save to EEPROM");
+        Serial.print("SSID length: ");
+        Serial.println(len1);
+        Serial.print("PASSWORD length: ");
+        Serial.println(len2);
+        Serial.println("***********************************");
+      }
+      return false;
+    }
+    if (str2.indexOf(" ") >= 0) return false;
+  }
+
+
+  if (str2.indexOf("%3D") >= 0) return false;
+  if (str2.indexOf("%26") >= 0) return false;
+  if (str4.indexOf("%3D") >= 0) return false;
+  if (str4.indexOf("%26") >= 0) return false;
+  if (DEBUG) Serial.println("No =/&/+/#/? found.");
+
+  //String ssid; 0 - 50
+  //String pass; 51 - 100
+  //String AP_PASSWORD; 101 - 150
+  //String nameConfig; 151 - 200
+  //String buttonConfig; 201 - 250
+  if (str1 == "ssid") {
+    if (DEBUG) Serial.println("SSID Save to EEPROM");
+    //Function to save to EEPROM
+    setEEPROMString(0, 50, str2); //start at address 0 to 50 for SSID
+    setEEPROMString(51, 100, str4); //start at address 51 to 100 for password
+    return true;
+  }
+  else if (str1 == "APpass") {
+    if (str2 == str4) {
+      if (DEBUG) Serial.println("AP password saved.");
+      //Function to save to EEPROM
+      setEEPROMString(101, 150, str2); //start at address 51 to 100 for password
+      return true;
+    }
+    else {
+      if (DEBUG) Serial.println("AP password not the same.");
+      return false;
+    }
+  }
+  else if (str1 == "page") {
+    if (str2 == "") return false;
+    if (DEBUG) Serial.println("Page Name Save to EEPROM");
+    //Function to save to EEPROM
+    setEEPROMString(151, 200, str2);
+    return true;
+  }
+  if (DEBUG) Serial.println("*** END OF FILE ***");
+  if (DEBUG) Serial.println("***********************************");
+}
+//Setup the Station Mode
+//****************************************************************************//
+void setupWiFi()
+{
+  //starting WIFI
+  WiFi.mode(WIFI_STA);   //station modes enable
+  WiFi.disconnect();
+  delay(100);
+  // Connect to WiFi network
+  if (DEBUG) Serial.println("\nWaiting Connect to " + ssid);
+  WiFi.begin(ssid.c_str(), pass.c_str());
+
+  int xx = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    xx++;
+    if (DEBUG) Serial.println(xx);
+    delay(150);
+    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+    if (xx > 100) { //time out. go back to AP mode
+      xx = 0;
+      setEEPROMString(203, 205, "0"); delay(10);
+      if (DEBUG) Serial.println("Time out error. Restart to AP mode..");
+      ESP.restart();
+    }
+  }
+  if (DEBUG) Serial.println("");
+  if (DEBUG) Serial.println("WiFi connected");
+
+  // Start the server
+  server.begin();
+  if (DEBUG) Serial.println("Server started");
+
+  // Print the IP address
+  if (DEBUG) Serial.println(WiFi.localIP());
+}
+//****************************************************************************//
+//
+//Setup the Access Point mode
+//
+//****************************************************************************//
+void setupAP() {
+  WiFi.mode(WIFI_AP);   //AP modes enable
+  if (DEBUG) Serial.println("\nStarting Access Point...");
+  /* You can remove the password parameter if you want the AP to be open. */
+  WiFi.softAP(AP_SSID, AP_PASSWORD.c_str());
+  if (DEBUG) {
+    Serial.println("HTTP server started");
+    Serial.print("AP IP address: ");
+    Serial.println(myIP);
+    Serial.print("*****************************************\n");
+    WiFi.printDiag(Serial);
+    Serial.print("*****************************************\n");
+  }
+  server.begin();
+}
+
+//****************************************************************************//
+//
+//Reading and writing to EEPROM
+//
+//****************************************************************************//
+int eepromStart = 0;  //Location where to start saving to EEPROM
+String getEEPROMString(int start, int len) {
+  EEPROM.begin(512);  delay(10);  String string = "";
+  for (int i = eepromStart + start; i < eepromStart + start + len; i++) {
+    string += char(EEPROM.read(i));
+    delay(2);
+  }  string = string.substring(0, string.indexOf(" "));
+  string.replace("+", " ") ;
+  EEPROM.end();
+  return string;
+}
+
+void setEEPROMString(int start, int len, String string) {
+  EEPROM.begin(512);
+  delay(10);
+  int si = 0;
+  for (int i = eepromStart + start; i < eepromStart + start + len; i++) {
+    char c;
+    if (si < string.length()) {
+      c = string[si];
+    } else {
+      c = 0;
+    }
+    EEPROM.write(i, c);
+    delay(2);
+    si++;
+  }
+  EEPROM.end();
+}
+
+void dEEPROM() {
+  setEEPROMString(0, 50, "WIFICreations"); delay(10);    //String ssid; 0 - 50
+  setEEPROMString(51, 100, "1234567890"); delay(10);     //String pass; 51 - 100
+  setEEPROMString(101, 150, "0987654321"); delay(10);    //String AP_PASSWORD; 101 - 150
+  setEEPROMString(151, 200, "Creations"); delay(10);     //String nameConfig; 151 - 200
+  setEEPROMString(201, 202, "1"); delay(10);             //set mode
+  setEEPROMString(203, 205, "1"); delay(10);             //change if problem with wifi selection
+}
